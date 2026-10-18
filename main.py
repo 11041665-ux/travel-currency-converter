@@ -1,221 +1,329 @@
+
 import os
 import time
+import logging
+from decimal import Decimal, InvalidOperation
 
 import requests
 from dotenv import load_dotenv
 
 
-# Завантажуємо змінні з файлу .env
 load_dotenv()
 
-WEATHER_API_KEY = os.getenv("WEATHER_API_KEY")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+WEATHER_API_KEY = os.getenv("WEATHER_API_KEY")
 WEATHER_CITY = os.getenv("WEATHER_CITY", "Kropyvnytskyi")
+EXCHANGE_RATE_API_KEY = os.getenv("EXCHANGE_RATE_API_KEY", "").strip()
 
-WEATHER_URL = "https://api.openweathermap.org/data/2.5/weather"
-TELEGRAM_URL = (
+TELEGRAM_API_URL = (
     f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}"
-    if TELEGRAM_BOT_TOKEN
-    else None
+)
+
+WEATHER_API_URL = "https://api.openweathermap.org/data/2.5/weather"
+
+EXCHANGE_API_URL = "https://open.er-api.com/v6/latest"
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(levelname)s - %(message)s"
 )
 
 
-def get_weather(city):
+def get_weather(city=None):
     """Отримує погоду для вказаного міста."""
+    city = city or WEATHER_CITY
+
     if not WEATHER_API_KEY:
-        raise ValueError("Не задано WEATHER_API_KEY у файлі .env")
+        raise RuntimeError(
+            "Не вказано WEATHER_API_KEY у файлі .env."
+        )
 
+    response = requests.get(
+        WEATHER_API_URL,
+        params={
+            "q": city,
+            "appid": WEATHER_API_KEY,
+            "units": "metric",
+            "lang": "uk",
+        },
+        timeout=15,
+    )
+    response.raise_for_status()
+    data = response.json()
+
+    if str(data.get("cod")) != "200":
+        raise ValueError(
+            data.get("message", "Не вдалося отримати погоду.")
+        )
+
+    description = data["weather"][0]["description"]
+    temperature = data["main"]["temp"]
+    feels_like = data["main"]["feels_like"]
+    humidity = data["main"]["humidity"]
+    wind_speed = data["wind"]["speed"]
+    city_name = data["name"]
+
+    return (
+        f"🌤 Погода: {city_name}\n"
+        f"Опис: {description.capitalize()}\n"
+        f"Температура: {temperature} °C\n"
+        f"Відчувається як: {feels_like} °C\n"
+        f"Вологість: {humidity}%\n"
+        f"Швидкість вітру: {wind_speed} м/с"
+    )
+
+
+def get_exchange_rates(base_currency):
+    """Отримує курси валют відносно базової валюти."""
+    base_currency = base_currency.upper()
+
+    if not (
+        len(base_currency) == 3
+        and base_currency.isalpha()
+    ):
+        raise ValueError(
+            "Код валюти має складатися з трьох літер, наприклад USD."
+        )
+
+    if EXCHANGE_RATE_API_KEY:
+        url = (
+            "https://v6.exchangerate-api.com/v6/"
+            f"{EXCHANGE_RATE_API_KEY}/latest/{base_currency}"
+        )
+    else:
+        url = f"{EXCHANGE_API_URL}/{base_currency}"
+
+    response = requests.get(url, timeout=15)
+    response.raise_for_status()
+    data = response.json()
+
+    if data.get("result") != "success":
+        error = data.get("error-type", "невідома помилка")
+        raise ValueError(
+            f"Не вдалося отримати курс валют: {error}"
+        )
+
+    rates = data.get("conversion_rates")
+
+    if not rates:
+        raise ValueError("API не повернуло курси валют.")
+
+    return rates, data.get("time_last_update_utc")
+
+
+def convert_currency(amount_text, from_currency, to_currency):
+    """Конвертує суму з однієї валюти в іншу."""
     try:
-        response = requests.get(
-            WEATHER_URL,
-            params={
-                "q": city,
-                "appid": WEATHER_API_KEY,
-                "units": "metric",
-                "lang": "uk",
-            },
-            timeout=15,
+        amount = Decimal(amount_text.replace(",", "."))
+    except InvalidOperation:
+        raise ValueError("Введи коректну суму, наприклад 100 або 12.50.")
+
+    if not amount.is_finite() or amount <= 0:
+        raise ValueError("Сума має бути більшою за нуль.")
+
+    from_currency = from_currency.upper()
+    to_currency = to_currency.upper()
+
+    rates, updated_at = get_exchange_rates(from_currency)
+
+    if to_currency not in rates:
+        raise ValueError(
+            f"Валюта {to_currency} не знайдена. "
+            "Перевір код валюти, наприклад EUR, USD або UAH."
         )
 
-        response.raise_for_status()
-        data = response.json()
+    rate = Decimal(str(rates[to_currency]))
+    result = amount * rate
 
-        return (
-            f"🌍 Погода у місті {data['name']}\n"
-            f"🌡 Температура: {data['main']['temp']} °C\n"
-            f"🤗 Відчувається як: "
-            f"{data['main']['feels_like']} °C\n"
-            f"☁️ Умови: {data['weather'][0]['description']}\n"
-            f"💧 Вологість: {data['main']['humidity']}%\n"
-            f"💨 Швидкість вітру: {data['wind']['speed']} м/с"
-        )
-
-    except requests.exceptions.HTTPError as error:
-        status = error.response.status_code
-
-        if status == 401:
-            raise RuntimeError(
-                "OpenWeatherMap відхилив API-ключ. Перевір його."
-            ) from error
-        elif status == 404:
-            raise RuntimeError(
-                "Місто не знайдено. Перевір назву."
-            ) from error
-        elif status == 429:
-            raise RuntimeError(
-                "Перевищено ліміт запитів до погодного API."
-            ) from error
-        else:
-            raise RuntimeError(
-                f"Помилка погодного API: HTTP {status}"
-            ) from error
-
-    except requests.exceptions.Timeout as error:
-        raise RuntimeError(
-            "Сервіс погоди не відповідає вчасно."
-        ) from error
-
-    except requests.exceptions.RequestException as error:
-        raise RuntimeError(
-            "Не вдалося з'єднатися з сервісом погоди."
-        ) from error
-
-    except (KeyError, IndexError, ValueError) as error:
-        raise RuntimeError(
-            "Не вдалося обробити відповідь погодного API."
-        ) from error
+    return (
+        f"💱 Конвертація валют\n"
+        f"{amount:,.2f} {from_currency} = "
+        f"{result:,.2f} {to_currency}\n"
+        f"Курс: 1 {from_currency} = {rate} {to_currency}\n"
+        f"Оновлення курсу: {updated_at or 'не вказано'}\n\n"
+        "Примітка: це довідковий курс API; "
+        "курс банку або обмінника може відрізнятися."
+    )
 
 
 def send_message(chat_id, text):
     """Надсилає повідомлення користувачу в Telegram."""
-    if not TELEGRAM_URL:
-        raise ValueError("Не задано TELEGRAM_BOT_TOKEN у файлі .env")
-
     response = requests.post(
-        f"{TELEGRAM_URL}/sendMessage",
+        f"{TELEGRAM_API_URL}/sendMessage",
         json={
             "chat_id": chat_id,
             "text": text,
         },
         timeout=15,
     )
-
     response.raise_for_status()
-    result = response.json()
 
+    result = response.json()
     if not result.get("ok"):
         raise RuntimeError("Telegram не зміг надіслати повідомлення.")
 
 
 def process_message(message):
-    """Обробляє повідомлення користувача."""
+    """Обробляє команду користувача."""
     chat_id = message["chat"]["id"]
     text = message.get("text", "").strip()
 
-    if text.startswith("/start"):
+    if not text:
+        return
+
+    command, _, args = text.partition(" ")
+    command = command.split("@")[0].lower()
+    args = args.strip()
+
+    if command == "/start":
         reply = (
-            "Привіт! 👋 Я Travel Weather Planner.\n\n"
-            "Я допоможу дізнатися погоду перед подорожжю.\n"
-            "Надішли /weather, щоб отримати погоду "
-            f"у місті {WEATHER_CITY}."
+            "Привіт! Я Travel Weather Planner 🌍\n\n"
+            "Я допоможу дізнатися погоду та конвертувати валюту.\n\n"
+            "Команди:\n"
+            "/weather — погода у налаштованому місті\n"
+            "/weather London — погода в іншому місті\n"
+            "/convert 100 EUR UAH — конвертація валют\n"
+            "/rates USD — курси валют відносно USD\n"
+            "/help — інструкція"
         )
         send_message(chat_id, reply)
 
-    elif text.startswith("/weather"):
-        try:
-            weather = get_weather(WEATHER_CITY)
-            send_message(chat_id, weather)
-            print(f"Погоду для {WEATHER_CITY} надіслано.")
-
-        except (RuntimeError, ValueError) as error:
-            print(f"Помилка погоди: {error}")
-            send_message(
-                chat_id,
-                f"Не вдалося отримати погоду.\nПричина: {error}",
-            )
-
-        except requests.exceptions.RequestException as error:
-            print(f"Помилка Telegram API: {error}")
-
-    elif text:
+    elif command == "/help":
         send_message(
             chat_id,
-            "Поки що я розумію команди /start і /weather.",
+            "Приклади використання:\n"
+            "/weather\n"
+            "/weather London\n"
+            "/convert 100 EUR UAH\n"
+            "/convert 50 USD EUR\n"
+            "/rates USD\n"
+            "/rates EUR"
+        )
+
+    elif command == "/weather":
+        try:
+            reply = get_weather(args or WEATHER_CITY)
+        except (ValueError, RuntimeError) as error:
+            reply = f"Не вдалося отримати погоду: {error}"
+        except requests.exceptions.RequestException:
+            logging.exception("Помилка запиту погоди")
+            reply = "Помилка з'єднання з сервісом погоди. Спробуй пізніше."
+
+        send_message(chat_id, reply)
+
+    elif command == "/convert":
+        parts = args.split()
+
+        if len(parts) != 3:
+            send_message(
+                chat_id,
+                "Формат команди:\n/convert 100 EUR UAH\n\n"
+                "Вкажи суму, початкову та кінцеву валюту."
+            )
+            return
+
+        amount, from_currency, to_currency = parts
+
+        try:
+            reply = convert_currency(
+                amount,
+                from_currency,
+                to_currency,
+            )
+        except (ValueError, RuntimeError) as error:
+            reply = f"Не вдалося конвертувати валюту: {error}"
+        except requests.exceptions.RequestException:
+            logging.exception("Помилка запиту курсу валют")
+            reply = "Не вдалося підключитися до сервісу курсів. Спробуй пізніше."
+
+        send_message(chat_id, reply)
+
+    elif command == "/rates":
+        base_currency = args.upper() if args else "USD"
+
+        try:
+            rates, updated_at = get_exchange_rates(base_currency)
+
+            preferred_currencies = ["UAH", "EUR", "USD", "GBP", "PLN", "CZK"]
+            lines = [
+                f"💱 Курси відносно {base_currency}:",
+                f"Оновлення: {updated_at or 'не вказано'}",
+                "",
+            ]
+
+            for currency in preferred_currencies:
+                if currency != base_currency and currency in rates:
+                    lines.append(
+                        f"1 {base_currency} = "
+                        f"{rates[currency]} {currency}"
+                    )
+
+            reply = "\n".join(lines)
+
+        except (ValueError, RuntimeError) as error:
+            reply = f"Не вдалося отримати курси: {error}"
+        except requests.exceptions.RequestException:
+            logging.exception("Помилка запиту курсів")
+            reply = "Помилка з'єднання з сервісом курсів. Спробуй пізніше."
+
+        send_message(chat_id, reply)
+
+    else:
+        send_message(
+            chat_id,
+            "Не знаю такої команди. Напиши /help, щоб побачити список."
         )
 
 
 def main():
-    """Запускає бота та перевіряє нові повідомлення."""
-    if not TELEGRAM_BOT_TOKEN or not WEATHER_API_KEY:
-        print(
-            "Помилка: перевір WEATHER_API_KEY і "
-            "TELEGRAM_BOT_TOKEN у файлі .env"
+    """Запускає бота та отримує нові повідомлення."""
+    if not TELEGRAM_BOT_TOKEN:
+        raise RuntimeError(
+            "Не вказано TELEGRAM_BOT_TOKEN у файлі .env."
         )
-        return
 
-    print("Travel Weather Planner запускається...")
-
-    # Перевіряємо токен Telegram перед запуском.
-    try:
-        response = requests.get(
-            f"{TELEGRAM_URL}/getMe",
-            timeout=15,
-        )
-        response.raise_for_status()
-        bot_data = response.json()
-
-        if not bot_data.get("ok"):
-            print("Telegram не підтвердив токен бота.")
-            return
-
-        print(f"Бот @{bot_data['result']['username']} запущений.")
-
-    except (requests.exceptions.RequestException, ValueError) as error:
-        print(f"Не вдалося підключитися до Telegram: {error}")
-        return
+    logging.info("Travel Weather Planner запущено.")
 
     offset = None
 
     while True:
         try:
             response = requests.get(
-                f"{TELEGRAM_URL}/getUpdates",
+                f"{TELEGRAM_API_URL}/getUpdates",
                 params={
+                    "timeout": 30,
                     "offset": offset,
-                    "timeout": 25,
                 },
                 timeout=35,
             )
             response.raise_for_status()
-            result = response.json()
+            data = response.json()
 
-            if not result.get("ok"):
-                print("Telegram повернув помилку отримання повідомлень.")
-                time.sleep(3)
-                continue
+            if not data.get("ok"):
+                raise RuntimeError("Telegram API повернуло помилку.")
 
-            for update in result["result"]:
+            for update in data.get("result", []):
                 offset = update["update_id"] + 1
+
                 message = update.get("message")
+                if not message:
+                    continue
 
-                if message and message.get("text"):
-                    try:
-                        process_message(message)
-                    except (
-                        requests.exceptions.RequestException,
-                        RuntimeError,
-                        ValueError,
-                    ) as error:
-                        print(f"Не вдалося обробити повідомлення: {error}")
+                try:
+                    process_message(message)
+                except Exception:
+                    logging.exception("Помилка обробки повідомлення")
 
-        except requests.exceptions.Timeout:
-            # Long polling може завершуватися за тайм-аутом.
-            continue
-
-        except requests.exceptions.RequestException as error:
-            print(f"Помилка мережі: {error}")
-            time.sleep(3)
+        except requests.exceptions.RequestException:
+            logging.exception("Помилка з'єднання з Telegram. Повтор через 5 секунд.")
+            time.sleep(5)
+        except RuntimeError:
+            logging.exception("Помилка Telegram API. Повтор через 5 секунд.")
+            time.sleep(5)
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except RuntimeError as error:
+        logging.error(error)
