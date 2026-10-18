@@ -46,3 +46,24 @@
 5. Запустіть застосунок командою, описаною в інструкції після реалізації бекенду.
 
 > Примітка: API-ключі та точні обмеження безкоштовних тарифів залежать від умов відповідних сервісів. Не публікуйте секретні ключі в репозиторії.
+
+
+## Telegram Bot Integration
+
+The project includes a Telegram bot that retrieves current
+weather data from OpenWeatherMap and sends it to the user.
+
+### Features
+- `/start` — displays a welcome message.
+- `/weather` — returns current weather for the configured city.
+- Error handling for API and network failures.
+
+### Configuration
+1. Install dependencies:
+   `pip install requests python-dotenv`
+2. Copy `.env.example` to `.env`.
+3. Add your API key and Telegram bot token to `.env`.
+4. Run the application:
+   `python main.py`
+
+Never commit the `.env` file or expose API keys.
