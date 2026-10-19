@@ -1,4 +1,3 @@
-
 import os
 import time
 import logging
@@ -30,7 +29,7 @@ logging.basicConfig(
 
 
 def get_weather(city=None):
-    """Отримує погоду для вказаного міста."""
+    """Отримує погоду та формує рекомендацію для користувача."""
     city = city or WEATHER_CITY
 
     if not WEATHER_API_KEY:
@@ -48,6 +47,7 @@ def get_weather(city=None):
         },
         timeout=15,
     )
+
     response.raise_for_status()
     data = response.json()
 
@@ -56,20 +56,41 @@ def get_weather(city=None):
             data.get("message", "Не вдалося отримати погоду.")
         )
 
+    # Отримання даних із відповіді API
     description = data["weather"][0]["description"]
+    weather_main = data["weather"][0]["main"].lower()
+
     temperature = data["main"]["temp"]
     feels_like = data["main"]["feels_like"]
     humidity = data["main"]["humidity"]
     wind_speed = data["wind"]["speed"]
     city_name = data["name"]
 
+    # Аналітична логіка: формування рекомендації
+    if weather_main in ("rain", "drizzle", "thunderstorm"):
+        recommendation = "☔ Візьми парасольку! Можливі опади."
+
+    elif weather_main == "snow":
+        recommendation = "❄️ На вулиці можливий сніг. Одягайся тепліше."
+
+    elif temperature >= 30:
+        recommendation = "🥵 Спекотно! Пий достатньо води."
+
+    elif temperature <= 0:
+        recommendation = "🧣 Мороз! Одягайся тепло."
+
+    else:
+        recommendation = "✅ Особливих погодних попереджень немає."
+
+    # Формування повідомлення для Telegram
     return (
         f"🌤 Погода: {city_name}\n"
         f"Опис: {description.capitalize()}\n"
         f"Температура: {temperature} °C\n"
         f"Відчувається як: {feels_like} °C\n"
         f"Вологість: {humidity}%\n"
-        f"Швидкість вітру: {wind_speed} м/с"
+        f"Швидкість вітру: {wind_speed} м/с\n\n"
+        f"💡 Рекомендація: {recommendation}"
     )
 
 
@@ -146,25 +167,43 @@ def convert_currency(amount_text, from_currency, to_currency):
     )
 
 
-def send_message(chat_id, text):
-    """Надсилає повідомлення користувачу в Telegram."""
+def send_message(chat_id, text, keyboard=True):
+    """Надсилає повідомлення та, за потреби, клавіатуру."""
+    reply_markup = None
+
+    if keyboard:
+        reply_markup = {
+            "keyboard": [
+                [
+                    {"text": "🌤 Погода"},
+                    {"text": "💱 Конвертер валют"}
+                ],
+                [
+                    {"text": "📊 Курси валют"},
+                    {"text": "ℹ️ Допомога"}
+                ]
+            ],
+            "resize_keyboard": True
+        }
+
     response = requests.post(
         f"{TELEGRAM_API_URL}/sendMessage",
         json={
             "chat_id": chat_id,
             "text": text,
+            "reply_markup": reply_markup
         },
-        timeout=15,
+        timeout=15
     )
+
     response.raise_for_status()
 
-    result = response.json()
-    if not result.get("ok"):
+    if not response.json().get("ok"):
         raise RuntimeError("Telegram не зміг надіслати повідомлення.")
 
 
 def process_message(message):
-    """Обробляє команду користувача."""
+    """Обробляє команди та натискання кнопок користувача."""
     chat_id = message["chat"]["id"]
     text = message.get("text", "").strip()
 
@@ -175,6 +214,30 @@ def process_message(message):
     command = command.split("@")[0].lower()
     args = args.strip()
 
+    # Обробка кнопок меню
+    if text == "🌤 Погода":
+        command = "/weather"
+        args = ""
+
+    elif text == "💱 Конвертер валют":
+        send_message(
+            chat_id,
+            "💱 Конвертер валют\n\n"
+            "Введи команду у форматі:\n"
+            "/convert 100 EUR UAH\n\n"
+            "Наприклад: /convert 50 USD EUR"
+        )
+        return
+
+    elif text == "📊 Курси валют":
+        command = "/rates"
+        args = "USD"
+
+    elif text == "ℹ️ Допомога":
+        command = "/help"
+        args = ""
+
+    # Команда старту
     if command == "/start":
         reply = (
             "Привіт! Я Travel Weather Planner 🌍\n\n"
@@ -191,7 +254,7 @@ def process_message(message):
     elif command == "/help":
         send_message(
             chat_id,
-            "Приклади використання:\n"
+            "📖 Приклади використання:\n\n"
             "/weather\n"
             "/weather London\n"
             "/convert 100 EUR UAH\n"
@@ -200,24 +263,32 @@ def process_message(message):
             "/rates EUR"
         )
 
+    # Отримання погоди
     elif command == "/weather":
         try:
             reply = get_weather(args or WEATHER_CITY)
+
         except (ValueError, RuntimeError) as error:
             reply = f"Не вдалося отримати погоду: {error}"
+
         except requests.exceptions.RequestException:
             logging.exception("Помилка запиту погоди")
-            reply = "Помилка з'єднання з сервісом погоди. Спробуй пізніше."
+            reply = (
+                "Помилка з'єднання з сервісом погоди. "
+                "Спробуй пізніше."
+            )
 
         send_message(chat_id, reply)
 
+    # Конвертація валют
     elif command == "/convert":
         parts = args.split()
 
         if len(parts) != 3:
             send_message(
                 chat_id,
-                "Формат команди:\n/convert 100 EUR UAH\n\n"
+                "Формат команди:\n"
+                "/convert 100 EUR UAH\n\n"
                 "Вкажи суму, початкову та кінцеву валюту."
             )
             return
@@ -230,21 +301,30 @@ def process_message(message):
                 from_currency,
                 to_currency,
             )
+
         except (ValueError, RuntimeError) as error:
             reply = f"Не вдалося конвертувати валюту: {error}"
+
         except requests.exceptions.RequestException:
             logging.exception("Помилка запиту курсу валют")
-            reply = "Не вдалося підключитися до сервісу курсів. Спробуй пізніше."
+            reply = (
+                "Не вдалося підключитися до сервісу курсів. "
+                "Спробуй пізніше."
+            )
 
         send_message(chat_id, reply)
 
+    # Перегляд курсів валют
     elif command == "/rates":
         base_currency = args.upper() if args else "USD"
 
         try:
             rates, updated_at = get_exchange_rates(base_currency)
 
-            preferred_currencies = ["UAH", "EUR", "USD", "GBP", "PLN", "CZK"]
+            preferred_currencies = [
+                "UAH", "EUR", "USD", "GBP", "PLN", "CZK"
+            ]
+
             lines = [
                 f"💱 Курси відносно {base_currency}:",
                 f"Оновлення: {updated_at or 'не вказано'}",
@@ -262,9 +342,13 @@ def process_message(message):
 
         except (ValueError, RuntimeError) as error:
             reply = f"Не вдалося отримати курси: {error}"
+
         except requests.exceptions.RequestException:
             logging.exception("Помилка запиту курсів")
-            reply = "Помилка з'єднання з сервісом курсів. Спробуй пізніше."
+            reply = (
+                "Помилка з'єднання з сервісом курсів. "
+                "Спробуй пізніше."
+            )
 
         send_message(chat_id, reply)
 
@@ -273,6 +357,7 @@ def process_message(message):
             chat_id,
             "Не знаю такої команди. Напиши /help, щоб побачити список."
         )
+
 
 
 def main():
