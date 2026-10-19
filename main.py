@@ -29,7 +29,6 @@ logging.basicConfig(
 
 
 def get_weather(city=None):
-    """Отримує погоду та формує рекомендацію для користувача."""
     city = city or WEATHER_CITY
 
     if not WEATHER_API_KEY:
@@ -95,7 +94,6 @@ def get_weather(city=None):
 
 
 def get_exchange_rates(base_currency):
-    """Отримує курси валют відносно базової валюти."""
     base_currency = base_currency.upper()
 
     if not (
@@ -133,7 +131,6 @@ def get_exchange_rates(base_currency):
 
 
 def convert_currency(amount_text, from_currency, to_currency):
-    """Конвертує суму з однієї валюти в іншу."""
     try:
         amount = Decimal(amount_text.replace(",", "."))
     except InvalidOperation:
@@ -168,7 +165,6 @@ def convert_currency(amount_text, from_currency, to_currency):
 
 
 def send_message(chat_id, text, keyboard=True):
-    """Надсилає повідомлення та, за потреби, клавіатуру."""
     reply_markup = None
 
     if keyboard:
@@ -203,7 +199,6 @@ def send_message(chat_id, text, keyboard=True):
 
 
 def process_message(message):
-    """Обробляє команди та натискання кнопок користувача."""
     chat_id = message["chat"]["id"]
     text = message.get("text", "").strip()
 
@@ -361,7 +356,6 @@ def process_message(message):
 
 
 def main():
-    """Запускає бота та отримує нові повідомлення."""
     if not TELEGRAM_BOT_TOKEN:
         raise RuntimeError(
             "Не вказано TELEGRAM_BOT_TOKEN у файлі .env."
